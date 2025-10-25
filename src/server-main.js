@@ -268,7 +268,21 @@ app.get('/public-characters', (request, response) => {
 // Host frontend assets
 const webpackMiddleware = getWebpackServeMiddleware();
 app.use(webpackMiddleware);
-app.use(express.static(path.join(serverDirectory, 'public'), {}));
+app.use(express.static(path.join(serverDirectory, 'public'), {
+    maxAge: '1d',           // 缓存 1 天
+    etag: true,             // 启用 ETag
+    lastModified: true,     // 启用 Last-Modified
+    setHeaders: (res, filePath) => {
+        // 对于不经常变化的资源，设置更长的缓存时间
+        if (filePath.match(/\.(js|css|woff|woff2|ttf|svg|png|jpg|jpeg|gif|ico)$/)) {
+            res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate'); // 1 天
+        }
+        // 对于 HTML 文件，使用较短的缓存或协商缓存
+        if (filePath.match(/\.html$/)) {
+            res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate'); // 1 小时
+        }
+    },
+}));
 
 // Public API
 app.use('/api/users', usersPublicRouter);
