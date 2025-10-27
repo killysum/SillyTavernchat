@@ -323,6 +323,12 @@ router.post('/register', async (request, response) => {
             return response.status(400).json({ error: 'Invalid handle' });
         }
 
+		// 验证用户名只包含字母和数字，不允许任何符号
+		if (!/^[a-z0-9]+$/.test(normalizedHandle)) {
+			console.warn('Register failed: Handle contains invalid characters:', normalizedHandle);
+			return response.status(400).json({ error: 'Username can only contain letters and numbers, no symbols allowed.' });
+		}
+
 		// 限制随意/弱用户名
 		if (isTrivialHandle(normalizedHandle)) {
 			console.warn('Register failed: Trivial/weak handle not allowed:', normalizedHandle);
