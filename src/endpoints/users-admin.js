@@ -1,4 +1,6 @@
 import { promises as fsPromises } from 'node:fs';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import storage from 'node-persist';
 import express from 'express';
@@ -27,9 +29,42 @@ export const router = express.Router();
  *     loadPercentage?: number;
  *     totalMessages?: number;
  *     lastActivityFormatted?: string;
- *   } | null
+ *   } | null,
+ *   storageSize?: number
  * }} AdminUserViewModel
  */
+
+/**
+ * 递归计算目录大小（字节）
+ * @param {string} dirPath - 目录路径
+ * @returns {Promise<number>} - 目录大小（字节）
+ */
+async function calculateDirectorySize(dirPath) {
+    let totalSize = 0;
+
+    try {
+        if (!fs.existsSync(dirPath)) {
+            return 0;
+        }
+
+        const items = await fsPromises.readdir(dirPath);
+
+        for (const item of items) {
+            const itemPath = path.join(dirPath, item);
+            const stats = await fsPromises.stat(itemPath);
+
+            if (stats.isDirectory()) {
+                totalSize += await calculateDirectorySize(itemPath);
+            } else {
+                totalSize += stats.size;
+            }
+        }
+    } catch (error) {
+        console.error('Error calculating directory size:', error);
+    }
+
+    return totalSize;
+}
 
 router.post('/get', requireAdminMiddleware, async (_request, response) => {
     try {
@@ -38,25 +73,29 @@ router.post('/get', requireAdminMiddleware, async (_request, response) => {
 
         /** @type {Promise<AdminUserViewModel>[]} */
         const viewModelPromises = users
-        .map(user => new Promise(resolve => {
-            getUserAvatar(user.handle).then(avatar => {
-                // 获取用户负载统计（如果可用）
-                const loadStats = systemMonitor.getUserLoadStats(user.handle);
+        .map(user => new Promise(async (resolve) => {
+            const avatar = await getUserAvatar(user.handle);
+            // 获取用户负载统计（如果可用）
+            const loadStats = systemMonitor.getUserLoadStats(user.handle);
 
-                resolve({
-                    handle: user.handle,
-                    name: user.name,
-                    avatar: avatar,
-                    admin: user.admin,
-                    enabled: user.enabled,
-                    created: user.created,
-                    password: !!user.password,
-                    loadStats: loadStats ? {
-                        loadPercentage: loadStats.loadPercentage,
-                        totalMessages: loadStats.totalMessages,
-                        lastActivityFormatted: loadStats.lastActivityFormatted
-                    } : null
-                });
+            // 计算用户目录大小
+            const directories = getUserDirectories(user.handle);
+            const storageSize = await calculateDirectorySize(directories.root);
+
+            resolve({
+                handle: user.handle,
+                name: user.name,
+                avatar: avatar,
+                admin: user.admin,
+                enabled: user.enabled,
+                created: user.created,
+                password: !!user.password,
+                storageSize: storageSize,
+                loadStats: loadStats ? {
+                    loadPercentage: loadStats.loadPercentage,
+                    totalMessages: loadStats.totalMessages,
+                    lastActivityFormatted: loadStats.lastActivityFormatted
+                } : null
             });
         }));
 
@@ -267,5 +306,103 @@ router.post('/slugify', requireAdminMiddleware, async (request, response) => {
     } catch (error) {
         console.error('Slugify failed:', error);
         return response.sendStatus(500);
+    }
+});
+
+/**
+ * 清理单个用户的备份文件
+ */
+router.post('/clear-backups', requireAdminMiddleware, async (request, response) => {
+    try {
+        if (!request.body.handle) {
+            console.warn('Clear backups failed: Missing required fields');
+            return response.status(400).json({ error: '缺少必需字段' });
+        }
+
+        const handle = request.body.handle;
+        const directories = getUserDirectories(handle);
+
+        let deletedSize = 0;
+        let deletedFiles = 0;
+
+        // 只清理备份目录
+        if (fs.existsSync(directories.backups)) {
+            const backupsSize = await calculateDirectorySize(directories.backups);
+            deletedSize += backupsSize;
+            const files = await fsPromises.readdir(directories.backups);
+            deletedFiles += files.length;
+            await fsPromises.rm(directories.backups, { recursive: true, force: true });
+            // 重新创建空目录
+            await fsPromises.mkdir(directories.backups, { recursive: true });
+        }
+
+        console.info(`Cleared backups for user ${handle}: ${deletedFiles} files, ${deletedSize} bytes`);
+        return response.json({
+            success: true,
+            deletedSize: deletedSize,
+            deletedFiles: deletedFiles,
+            message: `已清理 ${deletedFiles} 个备份文件，释放 ${(deletedSize / 1024 / 1024).toFixed(2)} MB 空间`
+        });
+    } catch (error) {
+        console.error('Clear backups failed:', error);
+        return response.status(500).json({ error: '清理备份文件失败: ' + error.message });
+    }
+});
+
+/**
+ * 一键清理所有用户的备份文件
+ */
+router.post('/clear-all-backups', requireAdminMiddleware, async (request, response) => {
+    try {
+        const userHandles = await getAllUserHandles();
+        let totalDeletedSize = 0;
+        let totalDeletedFiles = 0;
+        const results = [];
+
+        for (const handle of userHandles) {
+            try {
+                const directories = getUserDirectories(handle);
+                let userDeletedSize = 0;
+                let userDeletedFiles = 0;
+
+                // 只清理备份目录
+                if (fs.existsSync(directories.backups)) {
+                    const backupsSize = await calculateDirectorySize(directories.backups);
+                    userDeletedSize += backupsSize;
+                    const files = await fsPromises.readdir(directories.backups);
+                    userDeletedFiles += files.length;
+                    await fsPromises.rm(directories.backups, { recursive: true, force: true });
+                    await fsPromises.mkdir(directories.backups, { recursive: true });
+                }
+
+                totalDeletedSize += userDeletedSize;
+                totalDeletedFiles += userDeletedFiles;
+                results.push({
+                    handle: handle,
+                    deletedSize: userDeletedSize,
+                    deletedFiles: userDeletedFiles
+                });
+
+                console.info(`Cleared backups for user ${handle}: ${userDeletedFiles} files, ${userDeletedSize} bytes`);
+            } catch (error) {
+                console.error(`Error clearing backups for user ${handle}:`, error);
+                results.push({
+                    handle: handle,
+                    error: error.message
+                });
+            }
+        }
+
+        console.info(`Cleared all backups: ${totalDeletedFiles} files, ${totalDeletedSize} bytes`);
+        return response.json({
+            success: true,
+            totalDeletedSize: totalDeletedSize,
+            totalDeletedFiles: totalDeletedFiles,
+            results: results,
+            message: `已清理 ${userHandles.length} 个用户的备份文件，共 ${totalDeletedFiles} 个文件，释放 ${(totalDeletedSize / 1024 / 1024).toFixed(2)} MB 空间`
+        });
+    } catch (error) {
+        console.error('Clear all backups failed:', error);
+        return response.status(500).json({ error: '清理所有备份文件失败: ' + error.message });
     }
 });

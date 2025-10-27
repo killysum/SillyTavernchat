@@ -66,6 +66,7 @@ const STORAGE_KEYS = {
  * @property {boolean} password - Whether the user is password protected
  * @property {boolean} [enabled] - Whether the user is enabled
  * @property {number} [created] - The timestamp when the user was created
+ * @property {number} [storageSize] - The total size of the user's data in bytes
  */
 
 /**

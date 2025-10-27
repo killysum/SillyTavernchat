@@ -435,6 +435,82 @@ async function changePassword(handle, callback) {
 }
 
 /**
+ * Clear backups for a user.
+ * @param {string} handle User handle
+ * @param {function} callback Success callback
+ */
+async function clearUserBackups(handle, callback) {
+    try {
+        const template = $(await renderTemplateAsync('clearUserBackups'));
+        template.find('#clearUserName').text(handle);
+
+        const result = await callGenericPopup(template, POPUP_TYPE.CONFIRM, '', { okButton: '清理', cancelButton: '取消', wide: false, large: false });
+
+        if (result !== POPUP_RESULT.AFFIRMATIVE) {
+            throw new Error('Clear backups cancelled');
+        }
+
+        toastr.info('正在清理备份文件，请稍候...', '清理中');
+
+        const response = await fetch('/api/users/clear-backups', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ handle }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            toastr.error(data.error || 'Unknown error', '清理失败');
+            throw new Error('Failed to clear backups');
+        }
+
+        const data = await response.json();
+        toastr.success(data.message, '清理成功');
+        callback();
+    } catch (error) {
+        console.error('Error clearing backups:', error);
+    }
+}
+
+/**
+ * Clear backups for all users.
+ * @param {function} callback Success callback
+ */
+async function clearAllBackups(callback) {
+    try {
+        const confirm = await callGenericPopup(
+            '确定要清理所有用户的备份文件吗？此操作不可恢复！',
+            POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: '确认清理', cancelButton: '取消', wide: false, large: false },
+        );
+
+        if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
+            throw new Error('Clear all backups cancelled');
+        }
+
+        toastr.info('正在清理所有用户的备份文件，请稍候...', '清理中');
+
+        const response = await fetch('/api/users/clear-all-backups', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            toastr.error(data.error || 'Unknown error', '清理失败');
+            throw new Error('Failed to clear all backups');
+        }
+
+        const data = await response.json();
+        toastr.success(data.message, '清理成功');
+        callback();
+    } catch (error) {
+        console.error('Error clearing all backups:', error);
+    }
+}
+
+/**
  * Delete a user.
  * @param {string} handle User handle
  * @param {function} callback Success callback
@@ -880,7 +956,7 @@ async function changeAvatar(handle, avatar) {
 async function openAdminPanel() {
     async function renderUsers() {
         const users = await getUsers();
-        template.find('.usersList').empty();
+        template.find('.usersList .userAccount').remove(); // 清除旧的用户列表，保留按钮区域
         for (const user of users) {
             const userBlock = template.find('.userAccountTemplate .userAccount').clone();
             userBlock.find('.userName').text(user.name);
@@ -891,11 +967,20 @@ async function openAdminPanel() {
             userBlock.find('.hasPassword').toggle(user.password);
             userBlock.find('.noPassword').toggle(!user.password);
             userBlock.find('.userCreated').text(new Date(user.created).toLocaleString());
+
+            // 显示存储大小
+            if (user.storageSize !== undefined) {
+                userBlock.find('.userStorageSize').text(humanFileSize(user.storageSize));
+            } else {
+                userBlock.find('.userStorageSize').text('计算中...');
+            }
+
             userBlock.find('.userEnableButton').toggle(!user.enabled).on('click', () => enableUser(user.handle, renderUsers));
             userBlock.find('.userDisableButton').toggle(user.enabled).on('click', () => disableUser(user.handle, renderUsers));
             userBlock.find('.userPromoteButton').toggle(!user.admin).on('click', () => promoteUser(user.handle, renderUsers));
             userBlock.find('.userDemoteButton').toggle(user.admin).on('click', () => demoteUser(user.handle, renderUsers));
             userBlock.find('.userChangePasswordButton').on('click', () => changePassword(user.handle, renderUsers));
+            userBlock.find('.userClearBackupsButton').on('click', () => clearUserBackups(user.handle, renderUsers));
             userBlock.find('.userDelete').on('click', () => deleteUser(user.handle, renderUsers));
             userBlock.find('.userChangeNameButton').on('click', async () => changeName(user.handle, user.name, renderUsers));
             userBlock.find('.userBackupButton').on('click', function () {
@@ -960,6 +1045,9 @@ if (typeof window.initializeAdminExtensions === 'function') {
             renderUsers();
         });
     });
+
+    // 绑定一键清理所有用户备份文件按钮
+    template.find('.clearAllBackupsButton').on('click', () => clearAllBackups(renderUsers));
 
     callGenericPopup(template, POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: true, large: true, allowVerticalScrolling: true, allowHorizontalScrolling: true });
 
