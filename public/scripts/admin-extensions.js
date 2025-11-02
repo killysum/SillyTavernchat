@@ -412,6 +412,12 @@ async function clearSystemStats() {
 
 // 邀请码管理相关功能
 function bindInvitationCodeEvents() {
+    // 购买链接表单
+    bindPurchaseLinkForm();
+
+    // 加载购买链接
+    loadPurchaseLink();
+
     // 创建模式切换
     bindCreationModeToggle();
 
@@ -457,8 +463,91 @@ function bindInvitationCodeEvents() {
         });
     }
 
+    // 筛选器事件
+    const typeFilter = document.getElementById('invitationTypeFilter');
+    const statusFilter = document.getElementById('invitationStatusFilter');
+    if (typeFilter) {
+        typeFilter.addEventListener('change', function() {
+            renderInvitationCodes();
+        });
+    }
+    if (statusFilter) {
+        statusFilter.addEventListener('change', function() {
+            renderInvitationCodes();
+        });
+    }
+
     // 批量操作按钮
     bindBatchOperationEvents();
+}
+
+// 绑定购买链接表单
+function bindPurchaseLinkForm() {
+    const purchaseLinkForm = document.querySelector('.purchaseLinkForm');
+    if (purchaseLinkForm) {
+        const newForm = purchaseLinkForm.cloneNode(true);
+        purchaseLinkForm.parentNode.replaceChild(newForm, purchaseLinkForm);
+
+        newForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await savePurchaseLink();
+        });
+    }
+}
+
+// 加载购买链接
+async function loadPurchaseLink() {
+    try {
+        const response = await fetch('/api/invitation-codes/purchase-link', {
+            method: 'GET',
+            headers: getRequestHeaders()
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            const input = document.getElementById('purchaseLinkInput');
+            if (input) {
+                input.value = data.purchaseLink || '';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading purchase link:', error);
+    }
+}
+
+// 保存购买链接
+async function savePurchaseLink() {
+    const input = document.getElementById('purchaseLinkInput');
+    const statusDiv = document.querySelector('.purchaseLinkStatus');
+
+    if (!input || !statusDiv) return;
+
+    const purchaseLink = input.value.trim();
+
+    try {
+        const response = await fetch('/api/invitation-codes/purchase-link', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ purchaseLink })
+        });
+
+        if (!response.ok) {
+            throw new Error('保存失败');
+        }
+
+        statusDiv.textContent = '✓ 购买链接已保存';
+        statusDiv.style.color = 'green';
+        statusDiv.style.display = 'block';
+
+        setTimeout(() => {
+            statusDiv.style.display = 'none';
+        }, 3000);
+    } catch (error) {
+        console.error('Error saving purchase link:', error);
+        statusDiv.textContent = '✗ 保存失败：' + error.message;
+        statusDiv.style.color = 'red';
+        statusDiv.style.display = 'block';
+    }
 }
 
 // 绑定创建模式切换
@@ -539,7 +628,15 @@ async function loadInvitationCodes() {
         }
 
         const data = await response.json();
-        currentInvitationCodes = data.codes || [];
+        // 过滤掉无效的邀请码（code为undefined、null或空字符串）
+        currentInvitationCodes = (data.codes || []).filter(code => code && code.code && typeof code.code === 'string');
+
+        // 如果发现有无效数据，提示用户
+        const totalCodes = data.codes ? data.codes.length : 0;
+        if (totalCodes > currentInvitationCodes.length) {
+            console.warn(`发现 ${totalCodes - currentInvitationCodes.length} 个无效邀请码已被过滤`);
+        }
+
         renderInvitationCodes();
 
     } catch (error) {
@@ -558,7 +655,36 @@ function renderInvitationCodes() {
         return;
     }
 
-    const codesHtml = currentInvitationCodes.map(code => createInvitationCodeItem(code)).join('');
+    // 获取筛选条件
+    const typeFilter = document.getElementById('invitationTypeFilter');
+    const statusFilter = document.getElementById('invitationStatusFilter');
+    const selectedType = typeFilter ? typeFilter.value : 'all';
+    const selectedStatus = statusFilter ? statusFilter.value : 'all';
+
+    // 筛选邀请码（同时再次过滤无效数据）
+    let filteredCodes = currentInvitationCodes.filter(code => code && code.code && typeof code.code === 'string');
+
+    // 按类型筛选
+    if (selectedType !== 'all') {
+        filteredCodes = filteredCodes.filter(code => code.durationType === selectedType);
+    }
+
+    // 按状态筛选
+    if (selectedStatus !== 'all') {
+        if (selectedStatus === 'used') {
+            filteredCodes = filteredCodes.filter(code => code.used === true);
+        } else if (selectedStatus === 'unused') {
+            filteredCodes = filteredCodes.filter(code => code.used === false);
+        }
+    }
+
+    // 显示筛选结果
+    if (filteredCodes.length === 0) {
+        container.innerHTML = createEmptyState('fa-filter', '没有符合条件的邀请码', '请调整筛选条件');
+        return;
+    }
+
+    const codesHtml = filteredCodes.map(code => createInvitationCodeItem(code)).join('');
     container.innerHTML = codesHtml;
 
     // 绑定删除按钮事件
@@ -574,7 +700,29 @@ function createInvitationCodeItem(code) {
     const statusClass = status.class;
     const statusText = status.text;
     const createdDate = new Date(code.createdAt).toLocaleString('zh-CN');
-    const expiresText = code.expiresAt ? new Date(code.expiresAt).toLocaleString('zh-CN') : '永不过期';
+
+    // 类型映射
+    const durationTypeText = {
+        '1day': '1天',
+        '1week': '1周',
+        '1month': '1个月',
+        '1quarter': '1季度',
+        '6months': '半年',
+        '1year': '1年',
+        'permanent': '永久'
+    }[code.durationType] || code.durationType || '未知';
+
+    // 用户到期时间（仅在已使用时显示）
+    let userExpiresText = '';
+    if (code.used && code.userExpiresAt) {
+        userExpiresText = new Date(code.userExpiresAt).toLocaleString('zh-CN');
+    } else if (code.used && !code.userExpiresAt) {
+        userExpiresText = '永久';
+    }
+
+    // 确保字段不为 undefined
+    const createdBy = code.createdBy || '未知';
+    const usedBy = code.usedBy || '未知';
 
     return `
         <div class="invitationCodeItem" data-code="${code.code}">
@@ -582,11 +730,12 @@ function createInvitationCodeItem(code) {
             <div class="invitationCodeInfo">
                 <div class="invitationCodeValue" title="点击复制" onclick="copyToClipboard('${code.code}')">${code.code}</div>
                 <div class="invitationCodeMeta">
-                    <span>创建者: ${escapeHtml(code.createdBy)}</span>
+                    <span>创建者: ${escapeHtml(createdBy)}</span>
                     <span>创建时间: ${createdDate}</span>
-                    <span>过期时间: ${expiresText}</span>
-                    ${code.used ? `<span>使用者: ${escapeHtml(code.usedBy)}</span>` : ''}
+                    <span>类型: ${durationTypeText}</span>
+                    ${code.used ? `<span>使用者: ${escapeHtml(usedBy)}</span>` : ''}
                     ${code.used ? `<span>使用时间: ${new Date(code.usedAt).toLocaleString('zh-CN')}</span>` : ''}
+                    ${code.used && userExpiresText ? `<span>用户到期: ${userExpiresText}</span>` : ''}
                 </div>
             </div>
             <div class="invitationCodeActions">
@@ -605,10 +754,7 @@ function getInvitationCodeStatus(code) {
         return { class: 'used', text: '已使用' };
     }
 
-    if (code.expiresAt && Date.now() > code.expiresAt) {
-        return { class: 'expired', text: '已过期' };
-    }
-
+    // 邀请码永不过期，只有已使用和未使用两种状态
     return { class: 'unused', text: '未使用' };
 }
 
@@ -622,12 +768,11 @@ async function createInvitationCode() {
         return;
     }
 
-    const expiresInHours = form.querySelector('input[name="expiresInHours"]').value;
+    const durationType = form.querySelector('select[name="durationType"]').value;
 
-    const requestData = {};
-    if (expiresInHours && expiresInHours.trim()) {
-        requestData.expiresInHours = parseInt(expiresInHours, 10);
-    }
+    const requestData = {
+        durationType: durationType || 'permanent'
+    };
 
     // 禁用提交按钮防止重复提交
     submitButton.disabled = true;
@@ -647,7 +792,16 @@ async function createInvitationCode() {
         }
 
         const newCode = await response.json();
-        alert(`邀请码创建成功：${newCode.code}`);
+        const durationText = {
+            '1day': '1天',
+            '1week': '1周',
+            '1month': '1个月',
+            '1quarter': '1季度',
+            '6months': '半年',
+            '1year': '1年',
+            'permanent': '永久'
+        }[durationType] || '未知';
+        alert(`邀请码创建成功：${newCode.code}\n有效期类型：${durationText}`);
 
         // 清空表单
         form.reset();
@@ -702,17 +856,17 @@ async function createBatchInvitationCodes() {
     }
 
     const count = parseInt(form.querySelector('input[name="batchCount"]').value);
-    const expiresInHours = form.querySelector('input[name="batchExpiresInHours"]').value;
+    const durationType = form.querySelector('select[name="batchDurationType"]').value;
 
     if (!count || count < 1 || count > 100) {
         alert('数量必须在1-100之间');
         return;
     }
 
-    const requestData = { count };
-    if (expiresInHours && expiresInHours.trim()) {
-        requestData.expiresInHours = parseInt(expiresInHours, 10);
-    }
+    const requestData = {
+        count,
+        durationType: durationType || 'permanent'
+    };
 
     // 禁用提交按钮防止重复提交
     submitButton.disabled = true;
@@ -732,7 +886,16 @@ async function createBatchInvitationCodes() {
         }
 
         const result = await response.json();
-        alert(`成功创建了 ${result.count} 个邀请码`);
+        const durationText = {
+            '1day': '1天',
+            '1week': '1周',
+            '1month': '1个月',
+            '1quarter': '1季度',
+            '6months': '半年',
+            '1year': '1年',
+            'permanent': '永久'
+        }[durationType] || '未知';
+        alert(`成功创建了 ${result.count} 个邀请码\n有效期类型：${durationText}`);
 
         // 清空表单
         form.reset();
@@ -818,7 +981,9 @@ function downloadSelectedCodes() {
         return;
     }
 
-    downloadCodes(selectedCodes, '选中的邀请码');
+    // 获取完整的邀请码对象
+    const selectedCodeObjects = currentInvitationCodes.filter(code => selectedCodes.includes(code.code));
+    downloadCodes(selectedCodeObjects, '选中的邀请码');
 }
 
 // 下载全部邀请码
@@ -828,14 +993,57 @@ function downloadAllCodes() {
         return;
     }
 
-    const allCodes = currentInvitationCodes.map(code => code.code);
-    downloadCodes(allCodes, '全部邀请码');
+    // 获取当前显示的邀请码（考虑筛选）
+    const typeFilter = document.getElementById('invitationTypeFilter');
+    const statusFilter = document.getElementById('invitationStatusFilter');
+    const selectedType = typeFilter ? typeFilter.value : 'all';
+    const selectedStatus = statusFilter ? statusFilter.value : 'all';
+
+    let filteredCodes = currentInvitationCodes;
+
+    // 按类型筛选
+    if (selectedType !== 'all') {
+        filteredCodes = filteredCodes.filter(code => code.durationType === selectedType);
+    }
+
+    // 按状态筛选
+    if (selectedStatus !== 'all') {
+        if (selectedStatus === 'used') {
+            filteredCodes = filteredCodes.filter(code => code.used === true);
+        } else if (selectedStatus === 'unused') {
+            filteredCodes = filteredCodes.filter(code => code.used === false);
+        }
+    }
+
+    if (filteredCodes.length === 0) {
+        alert('没有符合条件的邀请码可下载');
+        return;
+    }
+
+    downloadCodes(filteredCodes, '全部邀请码');
 }
 
 // 下载邀请码文件
-function downloadCodes(codes, filename) {
-    // 创建文本内容（仅包含邀请码）
-    const textContent = codes.join('\n');
+function downloadCodes(codeObjects, filename) {
+    // 类型映射
+    const durationTypeText = {
+        '1day': '1天',
+        '1week': '1周',
+        '1month': '1个月',
+        '1quarter': '1季度',
+        '6months': '半年',
+        '1year': '1年',
+        'permanent': '永久'
+    };
+
+    // 创建文本内容（包含类型提示）
+    const lines = codeObjects.map(codeObj => {
+        const typeText = durationTypeText[codeObj.durationType] || codeObj.durationType || '未知';
+        const statusText = codeObj.used ? '已使用' : '未使用';
+        return `${codeObj.code} - 类型:${typeText} - 状态:${statusText}`;
+    });
+
+    const textContent = lines.join('\n');
 
     // 生成文件名
     const timestamp = new Date().toISOString().slice(0, 10);

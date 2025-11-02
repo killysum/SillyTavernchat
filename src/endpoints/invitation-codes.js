@@ -4,7 +4,9 @@ import {
     getAllInvitationCodes,
     deleteInvitationCode,
     isInvitationCodesEnabled,
-    cleanupExpiredInvitationCodes
+    cleanupExpiredInvitationCodes,
+    setPurchaseLink,
+    getPurchaseLink
 } from '../invitation-codes.js';
 import { requireAdminMiddleware } from '../users.js';
 
@@ -21,7 +23,7 @@ router.get('/', requireAdminMiddleware, async (request, response) => {
         response.json({ enabled: true, codes });
     } catch (error) {
         console.error('Error getting invitation codes:', error);
-        response.status(500).json({ error: 'Failed to get invitation codes' });
+        response.status(500).json({ error: '获取邀请码失败' });
     }
 });
 
@@ -32,14 +34,15 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
             return response.status(400).json({ error: 'Invitation codes are disabled' });
         }
 
-        const { expiresInHours } = request.body;
+        const { durationType } = request.body;
+        // @ts-ignore - user.handle exists in actual runtime
         const createdBy = request.user?.profile?.handle || request.user?.handle || 'admin';
 
-        const invitation = await createInvitationCode(createdBy, expiresInHours);
+        const invitation = await createInvitationCode(createdBy, durationType);
         response.json(invitation);
     } catch (error) {
         console.error('Error creating invitation code:', error);
-        response.status(500).json({ error: error.message || 'Failed to create invitation code' });
+        response.status(500).json({ error: error.message || '创建邀请码失败' });
     }
 });
 
@@ -50,7 +53,8 @@ router.post('/batch-create', requireAdminMiddleware, async (request, response) =
             return response.status(400).json({ error: 'Invitation codes are disabled' });
         }
 
-        const { count, expiresInHours } = request.body;
+        const { count, durationType } = request.body;
+        // @ts-ignore - user.handle exists in actual runtime
         const createdBy = request.user?.profile?.handle || request.user?.handle || 'admin';
 
         if (!count || count < 1 || count > 100) {
@@ -59,7 +63,7 @@ router.post('/batch-create', requireAdminMiddleware, async (request, response) =
 
         const invitations = [];
         for (let i = 0; i < count; i++) {
-            const invitation = await createInvitationCode(createdBy, expiresInHours);
+            const invitation = await createInvitationCode(createdBy, durationType);
             invitations.push(invitation);
         }
 
@@ -70,7 +74,7 @@ router.post('/batch-create', requireAdminMiddleware, async (request, response) =
         });
     } catch (error) {
         console.error('Error batch creating invitation codes:', error);
-        response.status(500).json({ error: error.message || 'Failed to batch create invitation codes' });
+        response.status(500).json({ error: error.message || '批量创建邀请码失败' });
     }
 });
 
@@ -78,7 +82,7 @@ router.post('/batch-create', requireAdminMiddleware, async (request, response) =
 router.delete('/:code', requireAdminMiddleware, async (request, response) => {
     try {
         if (!isInvitationCodesEnabled()) {
-            return response.status(400).json({ error: 'Invitation codes are disabled' });
+            return response.status(400).json({ error: '邀请码功能未启用' });
         }
 
         const { code } = request.params;
@@ -87,11 +91,11 @@ router.delete('/:code', requireAdminMiddleware, async (request, response) => {
         if (success) {
             response.json({ success: true });
         } else {
-            response.status(404).json({ error: 'Invitation code not found' });
+            response.status(404).json({ error: '邀请码不存在' });
         }
     } catch (error) {
         console.error('Error deleting invitation code:', error);
-        response.status(500).json({ error: 'Failed to delete invitation code' });
+        response.status(500).json({ error: '删除邀请码失败' });
     }
 });
 
@@ -99,13 +103,13 @@ router.delete('/:code', requireAdminMiddleware, async (request, response) => {
 router.post('/batch-delete', requireAdminMiddleware, async (request, response) => {
     try {
         if (!isInvitationCodesEnabled()) {
-            return response.status(400).json({ error: 'Invitation codes are disabled' });
+            return response.status(400).json({ error: '邀请码功能未启用' });
         }
 
         const { codes } = request.body;
 
         if (!codes || !Array.isArray(codes) || codes.length === 0) {
-            return response.status(400).json({ error: 'No codes provided for deletion' });
+            return response.status(400).json({ error: '未提供要删除的邀请码' });
         }
 
         let deletedCount = 0;
@@ -132,7 +136,7 @@ router.post('/batch-delete', requireAdminMiddleware, async (request, response) =
         });
     } catch (error) {
         console.error('Error batch deleting invitation codes:', error);
-        response.status(500).json({ error: 'Failed to batch delete invitation codes' });
+        response.status(500).json({ error: '批量删除邀请码失败' });
     }
 });
 
@@ -140,14 +144,14 @@ router.post('/batch-delete', requireAdminMiddleware, async (request, response) =
 router.post('/cleanup', requireAdminMiddleware, async (request, response) => {
     try {
         if (!isInvitationCodesEnabled()) {
-            return response.status(400).json({ error: 'Invitation codes are disabled' });
+            return response.status(400).json({ error: '邀请码功能未启用' });
         }
 
         const cleanedCount = await cleanupExpiredInvitationCodes();
         response.json({ cleanedCount });
     } catch (error) {
         console.error('Error cleaning up invitation codes:', error);
-        response.status(500).json({ error: 'Failed to cleanup invitation codes' });
+        response.status(500).json({ error: '清理邀请码失败' });
     }
 });
 
@@ -158,6 +162,33 @@ router.get('/status', async (request, response) => {
         response.json({ enabled });
     } catch (error) {
         console.error('Error checking invitation codes status:', error);
-        response.status(500).json({ error: 'Failed to check status' });
+        response.status(500).json({ error: '检查状态失败' });
+    }
+});
+
+// 设置购买链接（管理员功能）
+router.post('/purchase-link', requireAdminMiddleware, async (request, response) => {
+    try {
+        if (!isInvitationCodesEnabled()) {
+            return response.status(400).json({ error: '邀请码功能未启用' });
+        }
+
+        const { purchaseLink } = request.body;
+        await setPurchaseLink(purchaseLink);
+        response.json({ success: true, purchaseLink });
+    } catch (error) {
+        console.error('Error setting purchase link:', error);
+        response.status(500).json({ error: '设置购买链接失败' });
+    }
+});
+
+// 获取购买链接（公开接口）
+router.get('/purchase-link', async (request, response) => {
+    try {
+        const purchaseLink = await getPurchaseLink();
+        response.json({ purchaseLink });
+    } catch (error) {
+        console.error('Error getting purchase link:', error);
+        response.status(500).json({ error: '获取购买链接失败' });
     }
 });

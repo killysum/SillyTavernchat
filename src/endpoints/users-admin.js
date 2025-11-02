@@ -91,6 +91,7 @@ router.post('/get', requireAdminMiddleware, async (_request, response) => {
                 created: user.created,
                 password: !!user.password,
                 storageSize: storageSize,
+                expiresAt: user.expiresAt || null,
                 loadStats: loadStats ? {
                     loadPercentage: loadStats.loadPercentage,
                     totalMessages: loadStats.totalMessages,
@@ -245,6 +246,7 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
             salt: salt,
             admin: !!request.body.admin,
             enabled: true,
+            expiresAt: null, // 管理员创建的用户默认为永久账户
         };
 
         await storage.setItem(toKey(handle), newUser);

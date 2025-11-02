@@ -849,6 +849,7 @@ async function resetEverything(callback) {
 
 async function openUserProfile() {
     await getCurrentUser();
+
     const template = $(await renderTemplateAsync('userProfile'));
     template.find('.userName').text(currentUser.name);
     template.find('.userHandle').text(currentUser.handle);
@@ -857,6 +858,29 @@ async function openUserProfile() {
     template.find('.userCreated').text(new Date(currentUser.created).toLocaleString());
     template.find('.hasPassword').toggle(currentUser.password);
     template.find('.noPassword').toggle(!currentUser.password);
+
+    // 显示到期时间
+    if (currentUser.expiresAt) {
+        const expiresDate = new Date(currentUser.expiresAt);
+        const now = new Date();
+        const daysLeft = Math.ceil((expiresDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        let expiresText = expiresDate.toLocaleString();
+        if (daysLeft > 0) {
+            expiresText += ` (剩余${daysLeft}天)`;
+        } else {
+            expiresText += ' (已过期)';
+        }
+        template.find('.userExpiresAt').text(expiresText);
+        if (daysLeft <= 7 && daysLeft > 0) {
+            template.find('.userExpiresAt').css('color', 'orange');
+        } else if (daysLeft <= 0) {
+            template.find('.userExpiresAt').css('color', 'red');
+        }
+    } else {
+        template.find('.userExpiresAt').text('永久');
+        template.find('.userExpiresAt').css('color', 'green');
+    }
+
     template.find('.userSettingsSnapshotsButton').on('click', () => viewSettingsSnapshots());
     template.find('.userChangeNameButton').on('click', async () => changeName(currentUser.handle, currentUser.name, async () => {
         await getCurrentUser();
@@ -867,6 +891,74 @@ async function openUserProfile() {
         template.find('.hasPassword').toggle(currentUser.password);
         template.find('.noPassword').toggle(!currentUser.password);
     }));
+
+    // 续费按钮事件
+    template.find('.userRenewButton').on('click', async () => {
+        // 获取购买链接
+        let purchaseLink = '';
+        try {
+            const linkResponse = await fetch('/api/invitation-codes/purchase-link', {
+                method: 'GET',
+                headers: getRequestHeaders()
+            });
+            if (linkResponse.ok) {
+                const linkData = await linkResponse.json();
+                purchaseLink = linkData.purchaseLink || '';
+            }
+        } catch (error) {
+            console.error('获取购买链接失败:', error);
+        }
+
+        // 构建提示信息
+        let promptMessage = '请输入续费码';
+        if (purchaseLink) {
+            promptMessage = `请输入续费码\n\n如需购买续费码，请访问：\n${purchaseLink}`;
+        }
+
+        const code = await callGenericPopup(promptMessage, POPUP_TYPE.INPUT, '', { okButton: '确认', cancelButton: '取消' });
+
+        if (!code) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/users/renew', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ invitationCode: code })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                toastr.error(data.error || '续费失败', '错误');
+                return;
+            }
+
+            toastr.success(data.message || '续费成功', '成功');
+
+            // 刷新用户信息
+            await getCurrentUser();
+            if (currentUser.expiresAt) {
+                const expiresDate = new Date(currentUser.expiresAt);
+                const now = new Date();
+                const daysLeft = Math.ceil((expiresDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                let expiresText = expiresDate.toLocaleString();
+                if (daysLeft > 0) {
+                    expiresText += ` (剩余${daysLeft}天)`;
+                }
+                template.find('.userExpiresAt').text(expiresText);
+                template.find('.userExpiresAt').css('color', daysLeft <= 7 ? 'orange' : '');
+            } else {
+                template.find('.userExpiresAt').text('永久');
+                template.find('.userExpiresAt').css('color', 'green');
+            }
+        } catch (error) {
+            console.error('续费错误:', error);
+            toastr.error('续费失败，请稍后重试', '错误');
+        }
+    });
+
     template.find('.userBackupButton').on('click', function () {
         $(this).addClass('disabled');
         backupUserData(currentUser.handle, () => {
@@ -973,6 +1065,28 @@ async function openAdminPanel() {
                 userBlock.find('.userStorageSize').text(humanFileSize(user.storageSize));
             } else {
                 userBlock.find('.userStorageSize').text('计算中...');
+            }
+
+            // 显示到期时间
+            if (user.expiresAt) {
+                const expiresDate = new Date(user.expiresAt);
+                const now = new Date();
+                const daysLeft = Math.ceil((expiresDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                let expiresText = expiresDate.toLocaleString();
+                if (daysLeft > 0) {
+                    expiresText += ` (剩余${daysLeft}天)`;
+                } else {
+                    expiresText += ' (已过期)';
+                }
+                userBlock.find('.userExpiresAt').text(expiresText);
+                if (daysLeft <= 7 && daysLeft > 0) {
+                    userBlock.find('.userExpiresAt').css('color', 'orange');
+                } else if (daysLeft <= 0) {
+                    userBlock.find('.userExpiresAt').css('color', 'red');
+                }
+            } else {
+                userBlock.find('.userExpiresAt').text('永久');
+                userBlock.find('.userExpiresAt').css('color', 'green');
             }
 
             userBlock.find('.userEnableButton').toggle(!user.enabled).on('click', () => enableUser(user.handle, renderUsers));

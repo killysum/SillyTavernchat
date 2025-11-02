@@ -55,6 +55,7 @@ const STORAGE_KEYS = {
  * @property {string} salt - Salt used for hashing the password
  * @property {boolean} enabled - Whether the user is enabled
  * @property {boolean} admin - Whether the user is an admin (can manage other users)
+ * @property {number | null} [expiresAt] - The timestamp when the user subscription expires (null for permanent users)
  */
 
 /**
@@ -67,6 +68,7 @@ const STORAGE_KEYS = {
  * @property {boolean} [enabled] - Whether the user is enabled
  * @property {number} [created] - The timestamp when the user was created
  * @property {number} [storageSize] - The total size of the user's data in bytes
+ * @property {number | null} [expiresAt] - The timestamp when the user subscription expires (null for permanent users)
  */
 
 /**
@@ -871,6 +873,39 @@ export async function setUserDataMiddleware(request, response, next) {
     if (!user.enabled) {
         console.error('User is disabled:', handle);
         return next();
+    }
+
+    // 检查用户是否过期
+    if (user.expiresAt && user.expiresAt < Date.now()) {
+        console.log('User account expired:', handle);
+
+        // 获取购买链接
+        let purchaseLink = '';
+        try {
+            const { getPurchaseLink } = await import('./invitation-codes.js');
+            purchaseLink = await getPurchaseLink();
+        } catch (error) {
+            console.error('Error getting purchase link for expired user:', error);
+        }
+
+        // 清除会话中的用户标识
+        if (request.session && request.session.handle) {
+            // @ts-ignore - 清除过期用户的会话
+            request.session.handle = null;
+        }
+
+        // 返回特定的过期错误
+        const errorResponse = {
+            error: '用户账户已过期',
+            expired: true,
+            message: '您的账户已过期，请重新登录并续费'
+        };
+
+        if (purchaseLink) {
+            errorResponse.purchaseLink = purchaseLink;
+        }
+
+        return response.status(401).json(errorResponse);
     }
 
     const directories = getUserDirectories(handle);

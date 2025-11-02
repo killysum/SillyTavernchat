@@ -6,7 +6,7 @@ import { RateLimiterMemory, RateLimiterRes } from 'rate-limiter-flexible';
 import { getIpFromRequest, getRealIpFromHeader } from '../express-common.js';
 import { color, Cache, getConfigValue } from '../util.js';
 import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt, getAllUserHandles, getUserDirectories, ensurePublicDirectoriesExist } from '../users.js';
-import { validateInvitationCode, useInvitationCode } from '../invitation-codes.js';
+import { validateInvitationCode, useInvitationCode, getPurchaseLink, isInvitationCodesEnabled } from '../invitation-codes.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import systemMonitor from '../system-monitor.js';
 import lodash from 'lodash';
@@ -93,7 +93,7 @@ router.post('/login', async (request, response) => {
     try {
         if (!request.body.handle) {
             console.warn('Login failed: Missing required fields');
-            return response.status(400).json({ error: 'Missing required fields' });
+            return response.status(400).json({ error: '缺少必填字段' });
         }
 
         const ip = getIpAddress(request);
@@ -104,17 +104,28 @@ router.post('/login', async (request, response) => {
 
         if (!user) {
             console.error('Login failed: User', request.body.handle, 'not found');
-            return response.status(403).json({ error: 'Incorrect credentials' });
+            return response.status(403).json({ error: '用户名或密码错误' });
         }
 
         if (!user.enabled) {
             console.warn('Login failed: User', user.handle, 'is disabled');
-            return response.status(403).json({ error: 'User is disabled' });
+            return response.status(403).json({ error: '用户已被禁用' });
+        }
+
+        // 检查用户是否过期
+        if (user.expiresAt && user.expiresAt < Date.now()) {
+            console.warn('Login failed: User', user.handle, 'subscription expired');
+            const purchaseLink = await getPurchaseLink();
+            return response.status(403).json({
+                error: '您的账户已到期，请续费后再使用',
+                expired: true,
+                purchaseLink: purchaseLink || ''
+            });
         }
 
         if (user.password && user.password !== getPasswordHash(request.body.password, user.salt)) {
             console.warn('Login failed: Incorrect password for', user.handle);
-            return response.status(403).json({ error: 'Incorrect credentials' });
+            return response.status(403).json({ error: '用户名或密码错误' });
         }
 
         if (!request.session) {
@@ -133,7 +144,7 @@ router.post('/login', async (request, response) => {
     } catch (error) {
         if (error instanceof RateLimiterRes) {
             console.error('Login failed: Rate limited from', getIpAddress(request));
-            return response.status(429).send({ error: 'Too many attempts. Try again later or recover your password.' });
+            return response.status(429).send({ error: '尝试次数过多，请稍后重试或恢复密码' });
         }
 
         console.error('Login failed:', error);
@@ -196,7 +207,7 @@ router.post('/recover-step1', async (request, response) => {
     try {
         if (!request.body.handle) {
             console.warn('Recover step 1 failed: Missing required fields');
-            return response.status(400).json({ error: 'Missing required fields' });
+            return response.status(400).json({ error: '缺少必填字段' });
         }
 
         const ip = getIpAddress(request);
@@ -207,12 +218,12 @@ router.post('/recover-step1', async (request, response) => {
 
         if (!user) {
             console.error('Recover step 1 failed: User', request.body.handle, 'not found');
-            return response.status(404).json({ error: 'User not found' });
+            return response.status(404).json({ error: '用户不存在' });
         }
 
         if (!user.enabled) {
             console.error('Recover step 1 failed: User', user.handle, 'is disabled');
-            return response.status(403).json({ error: 'User is disabled' });
+            return response.status(403).json({ error: '用户已被禁用' });
         }
 
         const mfaCode = String(crypto.randomInt(1000, 9999));
@@ -224,7 +235,7 @@ router.post('/recover-step1', async (request, response) => {
     } catch (error) {
         if (error instanceof RateLimiterRes) {
             console.error('Recover step 1 failed: Rate limited from', getIpAddress(request));
-            return response.status(429).send({ error: 'Too many attempts. Try again later or contact your admin.' });
+            return response.status(429).send({ error: '尝试次数过多，请稍后重试或联系管理员' });
         }
 
         console.error('Recover step 1 failed:', error);
@@ -236,7 +247,7 @@ router.post('/recover-step2', async (request, response) => {
     try {
         if (!request.body.handle || !request.body.code) {
             console.warn('Recover step 2 failed: Missing required fields');
-            return response.status(400).json({ error: 'Missing required fields' });
+            return response.status(400).json({ error: '缺少必填字段' });
         }
 
         /** @type {import('../users.js').User} */
@@ -245,12 +256,12 @@ router.post('/recover-step2', async (request, response) => {
 
         if (!user) {
             console.error('Recover step 2 failed: User', request.body.handle, 'not found');
-            return response.status(404).json({ error: 'User not found' });
+            return response.status(404).json({ error: '用户不存在' });
         }
 
         if (!user.enabled) {
             console.warn('Recover step 2 failed: User', user.handle, 'is disabled');
-            return response.status(403).json({ error: 'User is disabled' });
+            return response.status(403).json({ error: '用户已被禁用' });
         }
 
         const mfaCode = MFA_CACHE.get(user.handle);
@@ -258,7 +269,7 @@ router.post('/recover-step2', async (request, response) => {
         if (request.body.code !== mfaCode) {
             await recoverLimiter.consume(ip);
             console.warn('Recover step 2 failed: Incorrect code');
-            return response.status(403).json({ error: 'Incorrect code' });
+            return response.status(403).json({ error: '恢复码错误' });
         }
 
         if (request.body.newPassword) {
@@ -278,7 +289,7 @@ router.post('/recover-step2', async (request, response) => {
     } catch (error) {
         if (error instanceof RateLimiterRes) {
             console.error('Recover step 2 failed: Rate limited from', getIpAddress(request));
-            return response.status(429).send({ error: 'Too many attempts. Try again later or contact your admin.' });
+            return response.status(429).send({ error: '尝试次数过多，请稍后重试或联系管理员' });
         }
 
         console.error('Recover step 2 failed:', error);
@@ -344,6 +355,21 @@ router.post('/register', async (request, response) => {
         const salt = getPasswordSalt();
         const hashedPassword = getPasswordHash(password, salt);
 
+        // 计算用户过期时间
+        let userExpiresAt = null;
+        // 只有在邀请码功能启用且提供了邀请码时，才根据邀请码设置过期时间
+        if (isInvitationCodesEnabled() && invitationCode) {
+            const invitationValidationResult = await validateInvitationCode(invitationCode);
+            if (invitationValidationResult.valid && invitationValidationResult.invitation) {
+                const invitation = invitationValidationResult.invitation;
+                if (invitation.durationDays !== null && invitation.durationDays > 0) {
+                    userExpiresAt = Date.now() + (invitation.durationDays * 24 * 60 * 60 * 1000);
+                }
+                // durationDays为null表示永久，userExpiresAt保持null
+            }
+        }
+        // 如果邀请码功能关闭，则 userExpiresAt 保持为 null（永久账户）
+
         const newUser = {
             handle: normalizedHandle,
             name: name.trim(),
@@ -352,13 +378,14 @@ router.post('/register', async (request, response) => {
             salt: salt,
             admin: false,
             enabled: true,
+            expiresAt: userExpiresAt,
         };
 
         await storage.setItem(toKey(normalizedHandle), newUser);
 
-        // 使用邀请码（如果提供）
-        if (invitationCode) {
-            await useInvitationCode(invitationCode, normalizedHandle);
+        // 使用邀请码（如果邀请码功能启用且提供了邀请码）
+        if (isInvitationCodesEnabled() && invitationCode) {
+            await useInvitationCode(invitationCode, normalizedHandle, userExpiresAt);
         }
 
         // Create user directories
@@ -373,7 +400,7 @@ router.post('/register', async (request, response) => {
     } catch (error) {
         if (error instanceof RateLimiterRes) {
             console.error('Register failed: Rate limited from', getIpAddress(request));
-            return response.status(429).send({ error: 'Too many attempts. Try again later.' });
+            return response.status(429).send({ error: '尝试次数过多，请稍后重试' });
         }
 
         console.error('Register failed:', error);
@@ -385,25 +412,158 @@ router.post('/register', async (request, response) => {
 router.get('/me', async (request, response) => {
     try {
         if (!request.session || !request.session.handle) {
-            return response.status(401).json({ error: 'Not authenticated' });
+            return response.status(401).json({ error: '未登录' });
         }
 
         const userHandle = request.session.handle;
         const user = await storage.getItem(toKey(userHandle));
 
         if (!user) {
-            return response.status(401).json({ error: 'User not found' });
+            return response.status(401).json({ error: '用户不存在' });
         }
 
-        // 返回用户基本信息
+        // 获取用户头像
+        const avatar = await getUserAvatar(user.handle);
+
+        // 返回用户完整信息
         return response.json({
             handle: user.handle,
             name: user.name,
             admin: user.admin || false,
-            enabled: user.enabled
+            enabled: user.enabled,
+            created: user.created,
+            avatar: avatar,
+            password: !!user.password,
+            expiresAt: user.expiresAt || null
         });
     } catch (error) {
         console.error('Get current user failed:', error);
         return response.sendStatus(500);
+    }
+});
+
+// 用户续费接口（已登录用户）
+router.post('/renew', async (request, response) => {
+    try {
+        if (!request.session || !request.session.handle) {
+            return response.status(401).json({ error: '未登录' });
+        }
+
+        const { invitationCode } = request.body;
+
+        if (!invitationCode) {
+            console.warn('Renew failed: Missing invitation code');
+            return response.status(400).json({ error: '请输入续费码' });
+        }
+
+        const userHandle = request.session.handle;
+        const user = await storage.getItem(toKey(userHandle));
+
+        if (!user) {
+            return response.status(401).json({ error: '用户不存在' });
+        }
+
+        // 验证邀请码
+        const invitationValidation = await validateInvitationCode(invitationCode);
+        if (!invitationValidation.valid) {
+            console.warn('Renew failed: Invalid invitation code');
+            return response.status(400).json({ error: invitationValidation.reason || '续费码无效' });
+        }
+
+        const invitation = invitationValidation.invitation;
+        if (!invitation) {
+            return response.status(400).json({ error: '续费码无效' });
+        }
+
+        // 计算新的过期时间
+        let newExpiresAt = null;
+        if (invitation.durationDays !== null && invitation.durationDays > 0) {
+            const baseTime = user.expiresAt && user.expiresAt > Date.now() ? user.expiresAt : Date.now();
+            newExpiresAt = baseTime + (invitation.durationDays * 24 * 60 * 60 * 1000);
+        }
+        // durationDays为null表示永久，newExpiresAt保持null
+
+        user.expiresAt = newExpiresAt;
+        await storage.setItem(toKey(userHandle), user);
+
+        // 标记邀请码为已使用，并记录用户到期时间
+        await useInvitationCode(invitationCode, userHandle, newExpiresAt);
+
+        console.info('User renewed successfully:', userHandle, 'new expires:', newExpiresAt ? new Date(newExpiresAt).toLocaleString() : '永久');
+        return response.json({
+            success: true,
+            expiresAt: newExpiresAt,
+            message: newExpiresAt ? '续费成功，到期时间：' + new Date(newExpiresAt).toLocaleString() : '续费成功，您的账户已升级为永久账户'
+        });
+    } catch (error) {
+        console.error('Renew failed:', error);
+        return response.status(500).json({ error: '续费失败，请稍后重试' });
+    }
+});
+
+// 用户续费接口（未登录用户 - 过期账户续费）
+router.post('/renew-expired', async (request, response) => {
+    try {
+        const { handle, password, invitationCode } = request.body;
+
+        if (!handle || !password) {
+            return response.status(400).json({ error: '请提供用户名和密码' });
+        }
+
+        if (!invitationCode) {
+            console.warn('Renew-expired failed: Missing invitation code');
+            return response.status(400).json({ error: '请输入续费码' });
+        }
+
+        // 验证用户身份
+        const normalizedHandle = handle.toLowerCase();
+        const user = await storage.getItem(toKey(normalizedHandle));
+
+        if (!user) {
+            return response.status(401).json({ error: '用户名或密码错误' });
+        }
+
+        // 验证密码
+        const passwordHash = getPasswordHash(password, user.salt);
+        if (user.password !== passwordHash) {
+            console.warn('Renew-expired failed: Invalid password for', normalizedHandle);
+            return response.status(401).json({ error: '用户名或密码错误' });
+        }
+
+        // 验证邀请码
+        const invitationValidation = await validateInvitationCode(invitationCode);
+        if (!invitationValidation.valid) {
+            console.warn('Renew-expired failed: Invalid invitation code');
+            return response.status(400).json({ error: invitationValidation.reason || '续费码无效' });
+        }
+
+        const invitation = invitationValidation.invitation;
+        if (!invitation) {
+            return response.status(400).json({ error: '续费码无效' });
+        }
+
+        // 计算新的过期时间
+        let newExpiresAt = null;
+        if (invitation.durationDays !== null && invitation.durationDays > 0) {
+            const baseTime = user.expiresAt && user.expiresAt > Date.now() ? user.expiresAt : Date.now();
+            newExpiresAt = baseTime + (invitation.durationDays * 24 * 60 * 60 * 1000);
+        }
+        // durationDays为null表示永久，newExpiresAt保持null
+
+        user.expiresAt = newExpiresAt;
+        await storage.setItem(toKey(normalizedHandle), user);
+
+        // 标记邀请码为已使用，并记录用户到期时间
+        await useInvitationCode(invitationCode, normalizedHandle, newExpiresAt);
+
+        console.info('User renewed successfully (expired account):', normalizedHandle, 'new expires:', newExpiresAt ? new Date(newExpiresAt).toLocaleString() : '永久');
+        return response.json({
+            success: true,
+            expiresAt: newExpiresAt,
+            message: newExpiresAt ? '续费成功，到期时间：' + new Date(newExpiresAt).toLocaleString() : '续费成功，您的账户已升级为永久账户'
+        });
+    } catch (error) {
+        console.error('Renew-expired failed:', error);
+        return response.status(500).json({ error: '续费失败，请稍后重试' });
     }
 });

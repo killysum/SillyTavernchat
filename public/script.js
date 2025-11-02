@@ -610,6 +610,46 @@ $.ajaxPrefilter((options, originalOptions, xhr) => {
 });
 
 /**
+ * 设置全局fetch拦截器来处理用户过期
+ */
+function setupFetchInterceptor() {
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const response = await originalFetch.apply(this, args);
+
+        // 克隆响应以便可以多次读取
+        const clonedResponse = response.clone();
+
+        // 只处理401状态码
+        if (response.status === 401) {
+            try {
+                const data = await clonedResponse.json();
+                // 检查是否为用户过期错误
+                if (data.expired === true) {
+                    console.log('User account expired, redirecting to login...');
+                    // 存储过期信息到sessionStorage
+                    sessionStorage.setItem('accountExpired', 'true');
+                    if (data.message) {
+                        sessionStorage.setItem('expiredMessage', data.message);
+                    }
+                    if (data.purchaseLink) {
+                        sessionStorage.setItem('expiredPurchaseLink', data.purchaseLink);
+                    }
+                    // 跳转到登录页
+                    setTimeout(() => {
+                        window.location.href = '/login';
+                    }, 500);
+                }
+            } catch (e) {
+                // 如果不是JSON响应，忽略
+            }
+        }
+
+        return response;
+    };
+}
+
+/**
  * Pings the STserver to check if it is reachable.
  * @returns {Promise<boolean>} True if the server is reachable, false otherwise.
  */
@@ -633,6 +673,9 @@ export async function pingServer() {
 
 //MARK: firstLoadInit
 async function firstLoadInit() {
+    // 设置全局fetch拦截器，处理用户过期
+    setupFetchInterceptor();
+
     try {
         const tokenResponse = await fetch('/csrf-token');
         const tokenData = await tokenResponse.json();
