@@ -408,3 +408,134 @@ router.post('/clear-all-backups', requireAdminMiddleware, async (request, respon
         return response.status(500).json({ error: '清理所有备份文件失败: ' + error.message });
     }
 });
+
+/**
+ * 一键删除2个月未登录用户的所有数据
+ */
+router.post('/delete-inactive-users', requireAdminMiddleware, async (request, response) => {
+    try {
+        const { dryRun = false } = request.body;
+        const inactiveDays = 60; // 2个月（60天）
+        const inactiveThreshold = inactiveDays * 24 * 60 * 60 * 1000; // 60天的毫秒数
+        const now = Date.now();
+
+        // 获取所有用户
+        const users = await storage.values(x => x.key.startsWith(KEY_PREFIX));
+
+        const inactiveUsers = [];
+        const results = [];
+        let totalDeletedSize = 0;
+
+        for (const user of users) {
+            // 不能删除管理员自己
+            if (user.handle === request.user.profile.handle) {
+                continue;
+            }
+
+            // 不能删除默认用户
+            if (user.handle === DEFAULT_USER.handle) {
+                continue;
+            }
+
+            // 不能删除管理员账户
+            if (user.admin) {
+                continue;
+            }
+
+            // 获取用户的最后活动时间
+            const userStats = systemMonitor.getUserLoadStats(user.handle);
+            let lastActivityTime = null;
+
+            if (userStats && userStats.lastActivity) {
+                // 如果有心跳记录，优先使用心跳时间
+                if (userStats.lastHeartbeat) {
+                    lastActivityTime = userStats.lastHeartbeat;
+                } else {
+                    lastActivityTime = userStats.lastActivity;
+                }
+            } else {
+                // 如果没有活动记录，使用用户创建时间作为最后活动时间
+                lastActivityTime = user.created || 0;
+            }
+
+            const timeSinceLastActivity = now - lastActivityTime;
+
+            // 如果超过60天未登录
+            if (timeSinceLastActivity > inactiveThreshold) {
+                const directories = getUserDirectories(user.handle);
+                const storageSize = await calculateDirectorySize(directories.root);
+
+                inactiveUsers.push({
+                    handle: user.handle,
+                    name: user.name,
+                    lastActivity: lastActivityTime,
+                    lastActivityFormatted: new Date(lastActivityTime).toLocaleString('zh-CN'),
+                    daysSinceLastActivity: Math.floor(timeSinceLastActivity / (24 * 60 * 60 * 1000)),
+                    storageSize: storageSize
+                });
+
+                // 如果不是试运行模式，执行删除
+                if (!dryRun) {
+                    try {
+                        // 删除用户记录
+                        await storage.removeItem(toKey(user.handle));
+
+                        // 删除用户数据目录
+                        if (fs.existsSync(directories.root)) {
+                            await fsPromises.rm(directories.root, { recursive: true, force: true });
+                        }
+
+                        // 重置用户统计数据
+                        systemMonitor.resetUserStats(user.handle);
+
+                        totalDeletedSize += storageSize;
+                        results.push({
+                            handle: user.handle,
+                            name: user.name,
+                            success: true,
+                            deletedSize: storageSize,
+                            message: `已删除用户 ${user.handle}，释放 ${(storageSize / 1024 / 1024).toFixed(2)} MB 空间`
+                        });
+
+                        console.info(`Deleted inactive user ${user.handle}: ${(storageSize / 1024 / 1024).toFixed(2)} MB`);
+                    } catch (error) {
+                        console.error(`Error deleting user ${user.handle}:`, error);
+                        results.push({
+                            handle: user.handle,
+                            name: user.name,
+                            success: false,
+                            error: error.message
+                        });
+                    }
+                }
+            }
+        }
+
+        if (dryRun) {
+            // 试运行模式，只返回将要删除的用户列表
+            return response.json({
+                success: true,
+                dryRun: true,
+                inactiveUsers: inactiveUsers,
+                totalUsers: inactiveUsers.length,
+                totalSize: inactiveUsers.reduce((sum, u) => sum + u.storageSize, 0),
+                message: `发现 ${inactiveUsers.length} 个用户超过 ${inactiveDays} 天未登录`
+            });
+        } else {
+            // 实际删除模式
+            return response.json({
+                success: true,
+                dryRun: false,
+                deletedUsers: results.filter(r => r.success),
+                failedUsers: results.filter(r => !r.success),
+                totalDeleted: results.filter(r => r.success).length,
+                totalFailed: results.filter(r => !r.success).length,
+                totalDeletedSize: totalDeletedSize,
+                message: `已删除 ${results.filter(r => r.success).length} 个用户，释放 ${(totalDeletedSize / 1024 / 1024).toFixed(2)} MB 空间`
+            });
+        }
+    } catch (error) {
+        console.error('Delete inactive users failed:', error);
+        return response.status(500).json({ error: '删除不活跃用户失败: ' + error.message });
+    }
+});

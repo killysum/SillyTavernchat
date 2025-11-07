@@ -511,6 +511,100 @@ async function clearAllBackups(callback) {
 }
 
 /**
+ * Delete inactive users who haven't logged in for 60 days (2 months).
+ * @param {function} callback Success callback
+ */
+async function deleteInactiveUsers(callback) {
+    try {
+        // 第一步：预览将要删除的用户
+        toastr.info('正在扫描不活跃用户，请稍候...', '扫描中');
+
+        const previewResponse = await fetch('/api/users/delete-inactive-users', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ dryRun: true }),
+        });
+
+        if (!previewResponse.ok) {
+            const data = await previewResponse.json();
+            toastr.error(data.error || 'Unknown error', '扫描失败');
+            throw new Error('Failed to preview inactive users');
+        }
+
+        const previewData = await previewResponse.json();
+
+        if (previewData.totalUsers === 0) {
+            toastr.info('没有发现超过2个月未登录的用户', '无需清理');
+            return;
+        }
+
+        // 构建用户列表HTML
+        let userListHtml = '<div class="flex-container flexFlowColumn flexGap5" style="max-height: 800px; overflow-y: auto;">';
+        userListHtml += '<p style="margin: 10px 0;">以下用户将被删除（包括所有数据）：</p>';
+        userListHtml += '<ul style="text-align: left; margin: 10px 0;">';
+
+        for (const user of previewData.inactiveUsers) {
+            const sizeMB = (user.storageSize / 1024 / 1024).toFixed(2);
+            userListHtml += `<li style="margin: 5px 0; padding: 5px; background: rgba(255,0,0,0.1); border-radius: 3px;">`;
+            userListHtml += `<strong>${user.name}</strong> (${user.handle})<br>`;
+            userListHtml += `<small>最后登录: ${user.lastActivityFormatted} (${user.daysSinceLastActivity}天前)</small><br>`;
+            userListHtml += `<small>存储占用: ${sizeMB} MB</small>`;
+            userListHtml += `</li>`;
+        }
+
+        userListHtml += '</ul>';
+        userListHtml += `<p style="margin: 10px 0; font-weight: bold; color: red;">`;
+        userListHtml += `共 ${previewData.totalUsers} 个用户，总计 ${(previewData.totalSize / 1024 / 1024).toFixed(2)} MB`;
+        userListHtml += `</p>`;
+        userListHtml += '<p style="margin: 10px 0; color: orange;"><strong>⚠️ 警告：此操作不可恢复！</strong></p>';
+        userListHtml += '</div>';
+
+        const confirmTemplate = $(userListHtml);
+
+        const confirm = await callGenericPopup(
+            confirmTemplate,
+            POPUP_TYPE.CONFIRM,
+            '确认删除2个月未登录用户',
+            { okButton: '确认删除', cancelButton: '取消', wide: true, large: false, allowVerticalScrolling: true },
+        );
+
+        if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
+            throw new Error('Delete inactive users cancelled');
+        }
+
+        // 第二步：确认后执行删除
+        toastr.info('正在删除不活跃用户，请稍候...', '删除中');
+
+        const deleteResponse = await fetch('/api/users/delete-inactive-users', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ dryRun: false }),
+        });
+
+        if (!deleteResponse.ok) {
+            const data = await deleteResponse.json();
+            toastr.error(data.error || 'Unknown error', '删除失败');
+            throw new Error('Failed to delete inactive users');
+        }
+
+        const deleteData = await deleteResponse.json();
+
+        // 显示详细结果
+        let resultMessage = deleteData.message;
+        if (deleteData.failedUsers && deleteData.failedUsers.length > 0) {
+            resultMessage += `\n失败 ${deleteData.failedUsers.length} 个用户`;
+        }
+
+        toastr.success(resultMessage, '删除完成');
+        callback();
+    } catch (error) {
+        if (error.message !== 'Delete inactive users cancelled') {
+            console.error('Error deleting inactive users:', error);
+        }
+    }
+}
+
+/**
  * Delete a user.
  * @param {string} handle User handle
  * @param {function} callback Success callback
@@ -1162,6 +1256,9 @@ if (typeof window.initializeAdminExtensions === 'function') {
 
     // 绑定一键清理所有用户备份文件按钮
     template.find('.clearAllBackupsButton').on('click', () => clearAllBackups(renderUsers));
+
+    // 绑定一键删除30天未登录用户按钮
+    template.find('.deleteInactiveUsersButton').on('click', () => deleteInactiveUsers(renderUsers));
 
     callGenericPopup(template, POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: true, large: true, allowVerticalScrolling: true, allowHorizontalScrolling: true });
 
