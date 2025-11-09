@@ -83,7 +83,7 @@ function getAllArticles() {
         }
 
         // 按创建时间倒序排列
-        return articles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        return articles.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     } catch (error) {
         console.error('Error getting all articles:', error);
         return [];
@@ -154,7 +154,7 @@ function getArticleComments(articleId) {
 
         // 返回所有评论的平铺数组，按创建时间排序
         // 前端会根据 parent_id 字段递归构建嵌套结构
-        return allComments.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        return allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     } catch (error) {
         console.error('Error getting article comments:', error);
         return [];
@@ -543,7 +543,9 @@ router.get('/search', async function (request, response) {
 
         // 关键词搜索
         if (q) {
-            const query = q.toLowerCase();
+            // 确保 q 是字符串类型
+            const queryString = Array.isArray(q) ? q[0] : q;
+            const query = String(queryString).toLowerCase();
             articles = articles.filter(article =>
                 article.title.toLowerCase().includes(query) ||
                 article.content.toLowerCase().includes(query) ||
